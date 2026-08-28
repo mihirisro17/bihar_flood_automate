@@ -1,45 +1,30 @@
 import os
 import subprocess
 import paramiko
+import time
+from datetime import datetime
 
 # ==========================================
 # CONFIGURATION
 # ==========================================
-# Automatically use the directory where this script is located
-REPO_DIR = os.path.dirname(os.path.abspath(__file__)) 
+REPO_DIR = '/home/sac/Documents/python_script/bihar_flood_automate' 
 OPERATION_FILE = os.path.join(REPO_DIR, 'operation.txt')
-
-# Directory containing the zip files pulled from GitHub
 ZIP_DIR = os.path.join(REPO_DIR, 'bihar_flood_Zip')
 
-# SFTP Settings
+# SFTP/SCP Settings
 SFTP_HOST = '192.168.2.137'
 SFTP_PORT = 22
 SFTP_USER = 'sac'
 SFTP_PASS = 'sac@123'    # <-- UPDATE THIS
 SFTP_REMOTE_DIR = '/home/sac/Documents/new_bihar/bihar_flood_Zip/'
+
+# Loop interval in minutes
+INTERVAL_MINUTES = 15
 # ==========================================
-
-def check_operation_status():
-    """Reads operation.txt to determine if git pull should run."""
-    if not os.path.exists(OPERATION_FILE):
-        print(f"[-] {OPERATION_FILE} not found. Defaulting to 'off'.")
-        return False
-
-    with open(OPERATION_FILE, 'r') as file:
-        status = file.read().strip().lower()
-
-    if status == 'on':
-        return True
-    elif status == 'off':
-        return False
-    else:
-        print(f"[-] Invalid status '{status}'. Expected 'on' or 'off'.")
-        return False
 
 def run_git_pull():
     """Executes a git pull command in the repository directory."""
-    print(f"[+] Executing 'git pull' in {REPO_DIR}...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] [+] Executing 'git pull' to check for updates...")
     try:
         result = subprocess.run(
             ['git', 'pull'], 
@@ -48,64 +33,88 @@ def run_git_pull():
             text=True, 
             capture_output=True
         )
-        print(result.stdout)
-        print("[+] Git pull completed successfully.")
+        if "Already up to date." not in result.stdout:
+            print(result.stdout.strip())
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [+] Git pull downloaded new changes.")
     except subprocess.CalledProcessError as e:
-        print(f"[-] Git pull failed:\n{e.stderr}")
-    except FileNotFoundError:
-        print("[-] Error: Git is not installed or not found in system path.")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [-] Git pull failed:\n{e.stderr}")
 
-def upload_zips_to_sftp():
-    """Finds all zip files in the ZIP_DIR and uploads them via SFTP."""
+def check_operation_status():
+    """Reads operation.txt to determine if file copying should run."""
+    if not os.path.exists(OPERATION_FILE):
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [-] {OPERATION_FILE} not found. Defaulting to 'off'.")
+        return False
+
+    with open(OPERATION_FILE, 'r') as file:
+        status = file.read().strip().lower()
+
+    return status == 'on'
+
+def upload_new_zips():
+    """Finds zip files and securely copies only the ones missing from the server."""
     if not os.path.exists(ZIP_DIR):
-        print(f"[-] Error: Directory not found at {ZIP_DIR}")
-        print("[-] Skipping upload.")
         return
 
-    # Find all .zip files in the directory
     zip_files = [f for f in os.listdir(ZIP_DIR) if f.endswith('.zip')]
-    
     if not zip_files:
-        print(f"[-] No .zip files found in {ZIP_DIR}. Nothing to upload.")
         return
 
-    print(f"[+] Found {len(zip_files)} zip file(s). Connecting to SFTP {SFTP_HOST}...")
     try:
         transport = paramiko.Transport((SFTP_HOST, SFTP_PORT))
         transport.connect(username=SFTP_USER, password=SFTP_PASS)
         sftp = paramiko.SFTPClient.from_transport(transport)
 
-        # Upload each zip file found
+        try:
+            remote_files = sftp.listdir(SFTP_REMOTE_DIR)
+        except IOError:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [-] Remote directory {SFTP_REMOTE_DIR} not found. Creating it...")
+            sftp.mkdir(SFTP_REMOTE_DIR)
+            remote_files = []
+
+        new_uploads_count = 0
         for zip_name in zip_files:
+            if zip_name in remote_files:
+                continue 
+                
             local_path = os.path.join(ZIP_DIR, zip_name)
             remote_path = f"{SFTP_REMOTE_DIR.rstrip('/')}/{zip_name}"
             
-            print(f"[+] Uploading {zip_name}...")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [+] Copying new file: {zip_name} to server...")
             sftp.put(local_path, remote_path)
+            new_uploads_count += 1
             
-        print("[+] All uploads completed successfully!")
+        if new_uploads_count > 0:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [+] Successfully copied {new_uploads_count} new file(s).")
+        else:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [*] All zip files are already on the server.")
 
         sftp.close()
         transport.close()
         
     except paramiko.AuthenticationException:
-        print("[-] Authentication failed. Check your SFTP password.")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [-] Authentication failed. Check your password.")
     except Exception as e:
-        print(f"[-] SFTP upload failed: {e}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [-] Copy failed: {e}")
 
 def main():
-    print("=== Starting Bihar Flood Automation ===")
+    print(f"=== Started Bihar Flood Automation Loop (Checking every {INTERVAL_MINUTES} minutes) ===")
     
-    # 1. Read operation.txt and pull if 'on'
-    if check_operation_status():
-        run_git_pull()
-    else:
-        print("[*] Operation is OFF. Skipping git pull.")
-
-    # 2. Upload all zip files found in the directory
-    upload_zips_to_sftp()
-    
-    print("=== Process Complete ===")
+    while True:
+        try:
+            # 1. ALWAYS pull first so we get the latest operation.txt from GitHub
+            run_git_pull()
+            
+            # 2. THEN check if the file says 'on' or 'off'
+            if check_operation_status():
+                upload_new_zips()
+            else:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] [*] Operation is OFF. Skipping file copy to server.")
+                
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [-] Unexpected error in loop: {e}")
+            
+        # Wait for 15 minutes before checking GitHub again
+        time.sleep(INTERVAL_MINUTES * 60)
 
 if __name__ == "__main__":
     main()
