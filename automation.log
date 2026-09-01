@@ -2,3 +2,7 @@
 [2026-09-01 11:47:47] [INFO] [BiharFloodAuto] Executing 'git pull' to check for updates...
 [2026-09-01 11:47:48] [INFO] [BiharFloodAuto] Git pull downloaded new changes. HEAD moved from 11e42c6 to 65d8dc8.
 [2026-09-01 11:47:48] [INFO] [BiharFloodAuto] [*] Operation is OFF. Skipping Email Fetch and SFTP copy.
+[2026-09-01 11:51:59] [INFO] [BiharFloodAuto] === Started Bihar Flood Automation Dashboard (interval: 15m) ===
+[2026-09-01 11:51:59] [INFO] [BiharFloodAuto] Executing 'git pull' to check for updates...
+[2026-09-01 11:52:00] [INFO] [BiharFloodAuto] Repository is already up to date.
+[2026-09-01 11:52:00] [INFO] [BiharFloodAuto] [*] Operation is OFF. Skipping Email Fetch and SFTP copy.
