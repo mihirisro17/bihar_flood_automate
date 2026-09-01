@@ -2,14 +2,31 @@ import os
 import subprocess
 import paramiko
 import time
+import logging
+from git import Repo
+from git.exc import GitCommandError, InvalidGitRepositoryError
 from datetime import datetime
+
+
+# ==========================================
+# Logging module configuration 
+# ==========================================
+
+logging.basicConfig(
+    level=logging.INFO, # Set to INFO in production
+    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+    datefmt="%H:%M:%S"
+)
+logger = logging.getLogger("GitMonitor")
+#TODO add file based logger output
+
 
 # ==========================================
 # CONFIGURATION
 # ==========================================
 REPO_DIR = '/home/sac/Documents/python_script/bihar_flood_automate' 
 OPERATION_FILE = os.path.join(REPO_DIR, 'operation.txt')
-ZIP_DIR = os.path.join(REPO_DIR, 'bihar_flood_Zip')
+ZIP_DIR = REPO_DIR #os.path.join(REPO_DIR, 'bihar_flood_Zip')
 
 # SFTP/SCP Settings
 SFTP_HOST = '192.168.2.137'
@@ -22,7 +39,85 @@ SFTP_REMOTE_DIR = '/home/sac/Documents/new_bihar/bihar_flood_Zip/'
 INTERVAL_MINUTES = 15
 # ==========================================
 
-def run_git_pull():
+
+
+def run_git_pull(repo_dir: str=REPO_DIR) -> bool:
+    """
+    Executes a git pull operation using GitPython with comprehensive logging,
+    and automatically restores any locally deleted .zip files.
+    
+    Args:
+        repo_dir (str): Path to the local git repository.
+        
+    Returns:
+        bool: True if new changes were downloaded or missing files were restored, False otherwise.
+    """
+    logger.info("Executing 'git pull' to check for updates...")
+    state_changed = False
+    
+    try:
+        # Bind to the existing repository
+        repo = Repo(repo_dir)
+        
+        if repo.bare:
+            logger.error(f"Repository at {repo_dir} is bare. Cannot perform pull.")
+            return False
+
+        origin = repo.remotes.origin
+        
+        # Store current commit hash to compare after pulling
+        old_commit = repo.head.commit
+
+        logger.debug(f"Pulling from remote: {origin.url}...")
+        pull_infos = origin.pull()
+
+        new_commit = repo.head.commit
+
+        # Check if the commit pointer actually moved
+        if old_commit == new_commit:
+            logger.info("Repository is already up to date.")
+        else:
+            logger.info(f"Git pull downloaded new changes. HEAD moved from {old_commit.hexsha[:7]} to {new_commit.hexsha[:7]}.")
+            
+            # Granular monitoring of what exactly was pulled
+            for info in pull_infos:
+                logger.debug(f"Updated ref {info.ref.name} (flags: {info.flags})")
+            state_changed = True
+
+        # --- Check for and restore missing .zip files ---
+        logger.debug("Scanning working directory for missing .zip files...")
+        missing_zips = []
+        
+        # diff(None) compares the Git index (tracked files) to the actual working tree
+        for diff in repo.index.diff(None):
+            # 'D' indicates the file was deleted locally
+            if diff.change_type == 'D' and diff.a_path.endswith('.zip'):
+                missing_zips.append(diff.a_path)
+
+        if missing_zips:
+            logger.warning(f"Detected {len(missing_zips)} missing .zip file(s) that exist in the repository:")
+            for zip_file in missing_zips:
+                logger.info(f" -> Restoring missing file: {zip_file}")
+                repo.git.checkout('--', zip_file)
+            
+            logger.info("All missing .zip files have been successfully restored.")
+            state_changed = True
+        else:
+            logger.debug("No locally tracked .zip files are missing.")
+
+        return state_changed
+
+    except InvalidGitRepositoryError:
+        logger.critical(f"The directory '{repo_dir}' is not a valid git repository.")
+    except GitCommandError as e:
+        logger.error(f"Git pull failed with status code {e.status}.")
+        logger.debug(f"Git error stderr: {e.stderr.strip()}")
+    except Exception as e:
+        logger.exception(f"An unexpected error occurred during git operations: {e}")
+        
+    return False
+
+def run_git_pull_old():
     """Executes a git pull command in the repository directory."""
     print(f"[{datetime.now().strftime('%H:%M:%S')}] [+] Executing 'git pull' to check for updates...")
     try:
@@ -53,6 +148,7 @@ def check_operation_status():
 def upload_new_zips():
     """Finds zip files and securely copies only the ones missing from the server."""
     if not os.path.exists(ZIP_DIR):
+        logger.info(f"ZIP dir not found exiting the execution phase")
         return
 
     zip_files = [f for f in os.listdir(ZIP_DIR) if f.endswith('.zip')]
@@ -96,17 +192,25 @@ def upload_new_zips():
     except Exception as e:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [-] Copy failed: {e}")
 
+
+
 def main():
     print(f"=== Started Bihar Flood Automation Loop (Checking every {INTERVAL_MINUTES} minutes) ===")
     
     while True:
         try:
             # 1. ALWAYS pull first so we get the latest operation.txt from GitHub
+            logger.info("Phase 1: [STARTED] Git pull and recovery")
             run_git_pull()
-            
+            logger.info("Phase 1: [ENDED] Git pull and recovery")
+            logger.info("Phase 2: [STARTED] Command detection")
+            op_status = check_operation_status()
+            logger.info("Phase 2: [ENDED] Command detection")
             # 2. THEN check if the file says 'on' or 'off'
-            if check_operation_status():
+            if op_status:
+                logger.info("Phase 3: [STARTED] Command execution")
                 upload_new_zips()
+                logger.info("Phase 3: [ENDED] Command execution")
             else:
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [*] Operation is OFF. Skipping file copy to server.")
                 
