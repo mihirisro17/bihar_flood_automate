@@ -1,0 +1,17 @@
+[Unit]
+Description=Bihar Flood Automation Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sac
+WorkingDirectory=/home/sac/Documents/python_script/bihar_flood_automate
+ExecStart=/usr/bin/python3 /home/sac/Documents/python_script/bihar_flood_automate/dash.py
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

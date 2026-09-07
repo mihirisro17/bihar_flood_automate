@@ -1,3 +1,7 @@
 *.zip
 credentials.json
+secrets.local.json
 token.json
+__pycache__/
+*.pyc
+ 
